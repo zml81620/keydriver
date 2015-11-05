@@ -40,6 +40,7 @@ __attribute__((section("__versions"))) = {
 	{ 0x7d56ee75, "platform_device_unregister" },
 	{ 0x932e75a5, "platform_driver_unregister" },
 	{ 0xea147363, "printk" },
+	{ 0x2196324, "__aeabi_idiv" },
 	{ 0x7d11c268, "jiffies" },
 	{ 0xb1ad28e0, "__gnu_mcount_nc" },
 };

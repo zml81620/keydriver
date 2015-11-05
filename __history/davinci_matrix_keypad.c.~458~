@@ -18,6 +18,7 @@
 #define MAX_COL_SCAN_UDELAY 20
 #define DEV_DRV_NAME "davinci_matrix_keypad"
 #define INIT_KEY_STATUS 0
+#define KEY_ENABLE_DELAY  700
 
 
 static const char row_gpio[ROW_NR] = {10,11,12};
@@ -36,10 +37,13 @@ static unsigned char row0_status = 0;
 static unsigned char row1_status = 0;
 static unsigned char row2_status = 0;
 
+//static unsigned char  g_init_key = 0;
+static unsigned short g_key_delay = 0;
+
 static unsigned char row_status[ROW_NR][COL_NR] =
 {
     [0] = {0x1,0x2,0x4,0x8,0x10,0x20},
-    [1] = {0x1,0x2,0x4,0x8},
+    [1] = {0x1,0x2,0x4,0x8,0xFF,0xFF},
     [2] = {0x1,0x2,0x06,0x0A,0x12,0x22}
 };
 
@@ -63,8 +67,7 @@ static void matrix_kp_setup_scan_timer(struct timer_list * timer,
 		unsigned long data)
 {
 	timer->function = matrix_kp_scan;
-	//timer->expires = jiffies + HZ/20;
-	timer->expires = jiffies + HZ/1;
+	timer->expires = jiffies + HZ/20;
 	timer->data = data;
 }
 
@@ -118,7 +121,7 @@ static void matrix_kp_get_col_statusbyrow(unsigned char * status, int row_index)
     {
        udelay(MAX_COL_SCAN_UDELAY*3);
     }
-    printk("\n after col scan,status[%d] = 0x%x\n",row_index,*status);
+    //printk("\n after col scan,status[%d] = 0x%x\n",row_index,*status);
 }
 
 static unsigned char matrix_kp_changed(const unsigned char* status,\
@@ -127,27 +130,35 @@ static unsigned char matrix_kp_changed(const unsigned char* status,\
     return ( (*status) ^ (*oldstatus) );
 }
 
-
-static int decode_row_status(unsigned long data,const unsigned char new_status,\
-           const unsigned char old_status,const int row_index,const int col_index)
+static void decode_row_status(unsigned long data,const unsigned char new_status,\
+           unsigned char *old_status,const int row_index,const int col_index)
 {
     struct input_dev * dev = (struct input_dev*)data;
     int pressed = 0;
     int flage = 0;
+    int col = -1;
 
     if(row_index == 1)
     {
+       col = judge_row_status(*old_status,row_index);
+       if(col >= 0)
+       {
+         input_report_key(dev, key_matrix[row_index][col],0);
+         input_sync(dev);
+         printk(KERN_ERR "\nkey %d will released,row=%x,col=%x \n",key_matrix[row_index][col],\
+              row_index,col);
+       }
        pressed = 1;
        flage = 1;
     }
     else
     {
-       if((new_status > 0) && (old_status == 0))
+       if((new_status > 0) && (*old_status == 0))
        {
            pressed = 1;
            flage = 1;
        }
-       else if((new_status == 0) && (old_status > 0))
+       else if((new_status == 0) && (*old_status > 0))
        {
            pressed = 0;
            flage = 1;
@@ -156,40 +167,36 @@ static int decode_row_status(unsigned long data,const unsigned char new_status,\
     if(flage)
     {
        input_report_key(dev, key_matrix[row_index][col_index],pressed);
-       input_sync(pdev);
+       input_sync(dev);
        printk(KERN_ERR "\nkey %d will %s,row=%x,col=%x\n",key_matrix[row_index][col_index],\
               pressed?"pressed":"released",row_index,col_index);
-       row2_status = new_status;
+       *old_status = new_status;
     }
-    return flage;
 }
-
+//--------------------process keys in row2-----------------------------------------
 static void real_process_row2(unsigned long data,const unsigned char status)
 {
     int col = -1;
-    int flage = 0;
 
-    if(status > 0)
+    if(status > 0) //表示有键按下
     {
       col = judge_row_status(status,2);
     }
-    else if(status == 0)
+    else if(status == 0) //表示按键松开，需要根据上一次键值判断是哪个键
     {
       col = judge_row_status(row2_status,2);
     }
     if(col >= 0)
     {
-       flage = decode_row_status(data,status,row2_status,2,col);
+       decode_row_status(data,status,&row2_status,2,col);
     }
-    return flage;
 }
 
 static int matrix_kp_process_row2(unsigned long data)
 {
-
     unsigned char new_status = 0;
     unsigned char changed = 0;
-    int flage = 0;
+    int flage = -1;
 
     matrix_kp_get_col_statusbyrow(&new_status,2);
     changed = matrix_kp_changed(&new_status,&row2_status);
@@ -200,18 +207,123 @@ static int matrix_kp_process_row2(unsigned long data)
         changed = matrix_kp_changed(&new_status,&row2_status);
         if(changed)
         {
-           printk(KERN_ERR "\n new_status=%x,old_status=%x\n",new_status,row2_status);
-           flage = real_process_row2(data,new_status);
+           //printk(KERN_ERR "\n new_status2=%x,old_status2=%x\n",new_status,row2_status);
+           real_process_row2(data,new_status);
         }
     }
+    flage = (new_status == 0)?0:1;
     return flage;
+}
+//--------------------process keys in row1-----------------------------------------
+static void real_process_row1(unsigned long data,const unsigned char status)
+{
+    int col = -1;
+
+    if(status > 0) //表示有键按下
+    {
+      col = judge_row_status(status,1);
+    }
+    if(col >= 0)
+    {
+       decode_row_status(data,status,&row1_status,1,col);
+    }
+}
+
+static void matrix_kp_process_row1(unsigned long data)
+{
+    unsigned char new_status = 0;
+    unsigned char changed = 0;
+
+    matrix_kp_get_col_statusbyrow(&new_status,1);
+    changed = matrix_kp_changed(&new_status,&row1_status);
+    if(changed)
+    {
+        delay_ms(20);
+        matrix_kp_get_col_statusbyrow(&new_status,1);
+        changed = matrix_kp_changed(&new_status,&row1_status);
+        if(changed)
+        {
+           //printk(KERN_ERR "\n new_status1=%x,old_status1=%x\n",new_status,row1_status);
+           real_process_row1(data,new_status);
+        }
+    }
+}
+//--------------------process keys in row0-----------------------------------------
+static void real_process_row0(unsigned long data,const unsigned char status)
+{
+    int col = -1;
+
+    if(status > 0) //表示有键按下
+    {
+      col = judge_row_status(status,0);
+    }
+    else if(status == 0) //表示按键松开，需要根据上一次键值判断是哪个键
+    {
+      col = judge_row_status(row0_status,0);
+    }
+    if(col >= 0)
+    {
+       decode_row_status(data,status,&row0_status,0,col);
+    }
+}
+
+static void matrix_kp_process_row0(unsigned long data)
+{
+    unsigned char new_status = 0;
+    unsigned char changed = 0;
+
+    matrix_kp_get_col_statusbyrow(&new_status,0);
+    changed = matrix_kp_changed(&new_status,&row0_status);
+    if(changed)
+    {
+        delay_ms(20);
+        matrix_kp_get_col_statusbyrow(&new_status,0);
+        changed = matrix_kp_changed(&new_status,&row0_status);
+        if(changed)
+        {
+           //printk(KERN_ERR "\n new_status0=%x,old_status0=%x\n",new_status,row0_status);
+           real_process_row0(data,new_status);
+        }
+    }
+}
+//------------------------------------------------------------------------------
+//-----------------------send a key when begining-------------------------------
+static void send_key_when_init(unsigned long data,const unsigned char key,int pressed)
+{
+    struct input_dev *dev = (struct input_dev*)data;
+
+    input_report_key(dev,key,pressed);
+    input_sync(dev);
 }
 
 static void matrix_kp_scan(unsigned long data)
 {
+        int row2_pressed = 0;
 
-        matrix_kp_process_row2(data);
+        if (g_key_delay < (KEY_ENABLE_DELAY-2))
+        {
+          g_key_delay++ ;
+        }
+        else if(g_key_delay == (KEY_ENABLE_DELAY-2))
+        {
+          send_key_when_init(data,key_matrix[1][1],1);
+          g_key_delay++ ;
+        }
+        else if(g_key_delay == (KEY_ENABLE_DELAY-1))
+        {
+          send_key_when_init(data,key_matrix[1][1],0);
+          g_key_delay++ ;
+        }
 
+        if(g_key_delay == KEY_ENABLE_DELAY)
+        {
+          row2_pressed = matrix_kp_process_row2(data);
+          if(!row2_pressed)
+          {
+            matrix_kp_process_row1(data);
+            matrix_kp_process_row0(data);
+          }
+        }
 	matrix_kp_setup_scan_timer(&scan_timer, data);
 	add_timer(&scan_timer);
 }
@@ -255,11 +367,12 @@ static int matrix_kp_probe(struct platform_device *pdev)
 	set_bit(EV_KEY, kp_input_dev->evbit);
 	for (row = 0; row < ROW_NR; row++)
 	{
-		for (col = 0; col < COL_NR; col++)
-		{
-			set_bit(key_matrix[row][col], kp_input_dev->keybit);
-		}
+	   for (col = 0; col < COL_NR; col++)
+	   {
+	  	set_bit(key_matrix[row][col], kp_input_dev->keybit);
+	   }
 	}
+
 	kp_input_dev->name = DEV_DRV_NAME;
 	kp_input_dev->phys = DEV_DRV_NAME;
 	kp_input_dev->dev.parent = &pdev->dev;
